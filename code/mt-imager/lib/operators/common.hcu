@@ -1,0 +1,169 @@
+/* common.hcu:  various definitions and CUDA code 
+ * common to more then one operator.
+ *      
+ * Copyright (C) 2013  Daniel Muscat
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * 
+ * Author's contact details can be found at http://www.danielmuscat.com 
+ *
+ */
+
+
+
+#include <cuComplex.h>
+namespace mtimager {
+
+#define TOTALLOADS 440
+#define TOTALLOADS_UNDER16 110
+#define complex_to_cuComplex(value) make_float2(value.real(),value.imag())
+#define loc_2_pos3D(loc,dim) (loc.z*dim.x*dim.y+loc.y*dim.x+loc.x)
+    
+typedef float pol1float_type;
+typedef float2 pol2float_type;
+typedef float4 pol4float_type;
+
+typedef int pol1flags_type;
+typedef int2 pol2flags_type;
+typedef int4 pol4flags_type;
+
+typedef struct { float2 vis; } pol1vis_type;
+typedef struct { float4 vis_X_Y; } pol2vis_type;
+typedef struct { float4 vis_XX_XY; float4 vis_YX_YY; } pol4vis_type;
+
+
+    __device__ __inline__ void zerofyvis(pol1vis_type &vis)
+    {
+        vis.vis=make_float2(0.0f,0.0f);
+    }
+    __device__ __inline__ void zerofyvis(pol2vis_type &vis)
+    {
+        vis.vis_X_Y=make_float4(0.0f,0.0f,0.0f,0.0f);
+    }
+    __device__ __inline__ void zerofyvis(pol4vis_type &vis)
+    {
+        vis.vis_XX_XY=make_float4(0.0f,0.0f,0.0f,0.0f);
+        vis.vis_YX_YY=make_float4(0.0f,0.0f,0.0f,0.0f);
+
+    }
+    __device__ __inline__ void tofloat(pol4flags_type &input, pol4float_type &output)
+    {
+        output.x=(float)input.x;
+        output.y=(float)input.y;
+        output.z=(float)input.z;
+        output.w=(float)input.w;
+    }
+    __device__ __inline__ void tofloat(pol2flags_type &input, pol2float_type &output)
+    {
+        output.x=(float)input.x;
+        output.y=(float)input.y;
+
+    }
+    __device__ __inline__ void tofloat(pol1flags_type &input, pol1float_type &output)
+    {
+        output=(float)input;
+    }
+    __inline__ __device__ void float4Add(float4 &dst,float4 &src) 
+    {
+        dst.x+=src.x; dst.y+=src.y; dst.z+=src.z; dst.w+=src.w;
+    }
+
+    __inline__ __device__ void visadd(pol1vis_type &vis,pol1vis_type &toAddVis,float &img_mult, pol1float_type &myWeights,pol1float_type &myFlags)
+    {
+        vis.vis.x+=toAddVis.vis.x*myWeights*(1.0-myFlags);
+        vis.vis.y+=toAddVis.vis.y*myWeights*(1.0-myFlags)*img_mult;
+    }
+
+    __inline__ __device__ void visadd(pol2vis_type &vis,pol2vis_type &toAddVis,float &img_mult,pol2float_type &myWeights,pol2float_type &myFlags)
+    {
+        vis.vis_X_Y.x+=toAddVis.vis_X_Y.x*myWeights.x*(1.0-myFlags.x);
+        vis.vis_X_Y.y+=toAddVis.vis_X_Y.y*myWeights.x*(1.0-myFlags.x)*img_mult;
+        vis.vis_X_Y.z+=toAddVis.vis_X_Y.z*myWeights.y*(1.0-myFlags.y);
+        vis.vis_X_Y.w+=toAddVis.vis_X_Y.w*myWeights.y*(1.0-myFlags.y)*img_mult;
+
+    }
+    __inline__ __device__ void visadd(pol4vis_type &vis,pol4vis_type &toAddVis,float &img_mult,pol4float_type &myWeights,pol4float_type &myFlags)
+    {
+        vis.vis_XX_XY.x+=toAddVis.vis_XX_XY.x*myWeights.x*(1.0-myFlags.x);
+        vis.vis_XX_XY.y+=toAddVis.vis_XX_XY.y*myWeights.x*(1.0-myFlags.x)*img_mult;
+        vis.vis_XX_XY.z+=toAddVis.vis_XX_XY.z*myWeights.y*(1.0-myFlags.y);
+        vis.vis_XX_XY.w+=toAddVis.vis_XX_XY.w*myWeights.y*(1.0-myFlags.y)*img_mult;
+        vis.vis_YX_YY.x+=toAddVis.vis_YX_YY.x*myWeights.z*(1.0-myFlags.z);
+        vis.vis_YX_YY.y+=toAddVis.vis_YX_YY.y*myWeights.z*(1.0-myFlags.z)*img_mult;
+        vis.vis_YX_YY.z+=toAddVis.vis_YX_YY.z*myWeights.w*(1.0-myFlags.w);
+        vis.vis_YX_YY.w+=toAddVis.vis_YX_YY.w*myWeights.w*(1.0-myFlags.w)*img_mult;
+    }
+    
+
+    __device__ __inline__ int  OriginToCentre1D(int& loc,int& dim)
+    {
+        int newloc;
+        if (dim%2)  //odd number
+        {
+            if (loc<=dim/2) newloc=loc+dim/2;
+            else newloc=loc-(dim/2)-1;
+        }
+        else    //even dimension
+        {
+           if (loc<(dim/2)) newloc=loc+(dim/2);
+           else newloc=loc-(dim/2); 
+        }
+        return newloc;
+    }
+    __device__ __inline__ int OriginToCorner1D(int & loc, int &dim)
+    {
+        int newloc;
+        if (dim%2)  //odd number
+        {
+            if (loc<dim/2) newloc=loc+dim/2+1;
+            else newloc=loc-(dim/2);
+        }
+        else    //even dimension
+        {
+           if (loc<(dim/2)) newloc=loc+(dim/2);
+           else newloc=loc-(dim/2); 
+        }
+        return newloc;
+    }
+
+    //atomicAdd for double is not supported yet by the CUDA API. This is an implientation as suggested in the guide
+    __device__ __inline__ double atomicAddDouble(double*,double);
+
+    __device__ __inline__ double atomicAddDouble(double* address, double val)
+    {
+            unsigned long long int* address_as_ull =(unsigned long long int*)address;
+            unsigned long long int old = *address_as_ull, assumed;
+            do {
+                    assumed = old;
+                    old = atomicCAS(address_as_ull, assumed,
+                    __double_as_longlong(val +
+                    __longlong_as_double(assumed)));
+            } while (assumed != old);
+            return __longlong_as_double(old);
+    }
+
+    template <class A> 
+    __device__ __inline__ A zero()
+    {
+        return 0;
+    }
+    template <>
+    __device__ __inline__ cuComplex zero()
+    {
+        return make_float2(0.0f,0.0f);
+    }
+    template <>
+    __device__ __inline__ cuDoubleComplex zero()
+    {
+        return make_double2(0.0,0.0);
+    }
+}

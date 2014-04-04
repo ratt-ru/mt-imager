@@ -1,0 +1,15 @@
+cmake_minimum_required (VERSION 2.6)
+project(gafw-gpu-standardoperators)
+find_package(CUDA)
+find_package(Boost 1.53 REQUIRED)
+include_directories(${Boost_INCLUDE_DIR})
+include_directories(${CUDA_INCLUDE_DIRS})
+include_directories(../pil ../tools/CppProperties ../GeneralImplimentation ../GPUImplimentation )
+FILE(GLOB MyCUSources *.cu)
+FILE(GLOB MyCPPSources *.cpp)
+set(CUDA_NVCC_FLAGS -lineinfo;--maxrregcount=32;-arch=sm_20;--ptxas-options=-v;-Xcompiler;-fPIC)
+cuda_compile(CompiledCuda ${MyCUSources} )
+add_library(gafw-gpu-standardoperators SHARED ${MyCPPSources} ${CompiledCuda} )
+target_link_libraries(gafw-gpu-standardoperators ${CUDA_LIBRARIES} ${CUDA_CUFFT_LIBRARIES}  ) 
+
+

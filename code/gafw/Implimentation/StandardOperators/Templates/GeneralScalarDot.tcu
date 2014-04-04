@@ -1,0 +1,237 @@
+/* 
+ * File:   GeneralScalarDot.tcu
+ * Author: daniel
+ *
+ * Created on 20 February 2013, 22:45
+ */
+
+#ifndef GENERALSCALARDOT_TCU
+#define	GENERALSCALARDOT_TCU
+
+#include "GeneralScalarDot.h"
+#include "HelperCudaFunctions.hcu"
+namespace GPUAFW { namespace OperatorTemplates
+{
+
+
+template<class FullDefenition>  
+GeneralScalarDot<FullDefenition>::GeneralScalarDot(GAFW::GPU::GPUFactory * factory,std::string nickname) : GAFW::Identity(nickname,FullDefenition::OperatorName),GAFW::GPU::GPUArrayOperator(factory,nickname,name)
+{
+
+}
+
+template<class FullDefenition>  
+GeneralScalarDot<FullDefenition>::~GeneralScalarDot()
+{
+
+}
+template<class FullDefenition>  
+void GeneralScalarDot<FullDefenition>::validate()
+{
+   //No of inputs
+    const int NoOfInputs=FullDefenition::NoOfInputs;
+    //No Of inpuyts does not alwasy mean the no of inputs... the first is a 1 element Array then that is teh scalar..but
+    ///To continue;
+    
+    
+    if (this->inputs.size()!=NoOfInputs) 
+    {
+        std::stringstream s;
+        s << NoOfInputs << " inputs of same size and type expected";
+        throw GAFW::ValidationException(s.str());
+    }
+    for ( int i=1;i<NoOfInputs;i++)
+        if (this->inputs[0]->getType()!=this->inputs[i]->getType()) throw GAFW::ValidationException ("Inputs are not of the same type");
+
+    GAFW::GeneralImplimentation::StoreType  inputType=this->inputs[0]->getType();
+    GAFW::GeneralImplimentation::StoreType  outputType=GAFW::GeneralImplimentation::StoreType Unknown;
+    if (this->isParameterSet("CastTo"))
+    {
+        this->checkParameter("CastTo",CppProperties::Properties::Int);
+        outputType=(GAFW::GeneralImplimentation::StoreType )this->getIntParameter("CastTo");
+    }
+    bool storetypesok=false;
+    for (int i=0;FullDefenition::options[i].inputType!=GAFW::GeneralImplimentation::StoreType Unknown;i++)
+    {
+        if (inputType==FullDefenition::options[i].inputType)
+        {
+            if (outputType==GAFW::GeneralImplimentation::StoreType Unknown)
+            {
+                outputType=FullDefenition::options[i].outputType;
+            }
+            if (outputType==FullDefenition::options[i].outputType)
+            {
+                //Option found
+                storetypesok=true;
+                break;
+            }
+        }
+    }
+    if (!storetypesok)
+    {
+        throw ValidationException("Input/output array store type combination is not supported");
+    }
+
+    GAFW::ArrayDimensions d=this->inputs[0]->getDimensions();
+    if (this->isParameterSet("dimension"))
+    {
+        this->checkParameter("dimension",CppProperties::Properties::Int);
+        this->setParameter("__internal_dimension",this->getIntParameter("dimension"));
+    }
+    else
+    {
+        this->setParameter("__internal_dimension",d.getNoOfDimensions());
+    }
+
+    if ((this->outputs.size()!=1)) throw GAFW::ValidationException("Expected only one output");
+    int dimension=this->getIntParameter("__internal_dimension");
+    if (dimension>d.getNoOfDimensions())
+        throw GAFW::ValidationException("Property dimension set up to a higher value then the dimension of the input");
+    int outdims=d.getNoOfDimensions()-dimension;
+    GAFW::ArrayDimensions outdim;
+    if (outdims==0)
+    {
+        outdim.setNoOfDimensions(1);
+        outdim.setDimension(0,1);
+    }
+    else
+    {
+        outdim.setNoOfDimensions(outdims);
+        for (int i=0;i<outdims;i++)
+        {
+            outdim.setDimension(i,d.getDimension(i));
+        }
+    }
+   this->outputs[0]->setDimensions(outdim);
+   this->outputs[0]->setType(outputType);
+}
+template<class FullDefenition>  
+void GeneralScalarDot<FullDefenition>::submitToGPU(GAFW::GPU::GPUSubmissionData &data)
+{
+
+    GAFW::GeneralImplimentation::StoreType  inputType=data.inputs[0].type;
+    GAFW::GeneralImplimentation::StoreType  outputType=data.outputs[0].type;
+
+    for (int i=0;FullDefenition::options[i].inputType!=GAFW::GeneralImplimentation::StoreType Unknown;i++)
+    {
+        if (inputType==FullDefenition::options[i].inputType)
+        {
+            if (outputType==FullDefenition::options[i].outputType)
+            {
+                //Option found
+                FullDefenition::options[i].submitFunc(data);
+                return;
+
+            }
+        }
+    }
+
+
+}
+
+
+template<class FullDefenition,class InputType,class OutputType>
+__global__ void reduce_general(InputPointers<InputType,FullDefenition::NoOfInputs> input, OutputType * output, uint no_of_elements, uint elements_per_thread)
+{
+    __shared__ OutputType sharedAcc; //Where result accumulates
+
+    if (threadIdx.x==0) sharedAcc=zero<OutputType>();
+    __syncthreads();
+    //No per thread and offset
+    OutputType myAcc=zero<OutputType>();
+    int myIdx=blockIdx.x*blockDim.x*(elements_per_thread)+threadIdx.x;
+    int lastElementInBlock=(blockIdx.x+1)*blockDim.x*(elements_per_thread)-1;
+    //if (threadIdx.x==0) printf ("%d \n ", lastElementInBlock);
+    InputElements<InputType,FullDefenition::NoOfInputs> loadedElements;
+     if (lastElementInBlock<no_of_elements)
+    {
+        for (int x=0;x<elements_per_thread;x++)
+        {
+#pragma unroll
+            for (int y=0;y<FullDefenition::NoOfInputs;y++)
+                loadedElements.inputs[y]=input.inputPointers[y][myIdx];
+            myIdx+=blockDim.x;
+            OutputType tmp;
+            FullDefenition::InnerOperationDefenition::InnerOperation(tmp,loadedElements);
+            FullDefenition::OuterOperationDefenition::OuterOperation(myAcc,tmp);
+
+        }
+       // printf ("block %d , thread %d , sum %d",blockIdx.x,threadIdx.x, mySum)
+    }
+    else
+    {
+        for (int x=0;x<elements_per_thread;x++)
+        {
+
+            if (myIdx<no_of_elements) 
+            {
+                for (int y=0;y<FullDefenition::NoOfInputs;y++)
+                    loadedElements.inputs[y]=input.inputPointers[y][myIdx];
+                myIdx+=blockDim.x;
+                OutputType tmp;
+                FullDefenition::InnerOperationDefenition::InnerOperation(tmp,loadedElements);
+                FullDefenition::OuterOperationDefenition::OuterOperation(myAcc,tmp);
+            }
+            else break;
+        }
+
+    }
+    //sharedSum=mySum;
+    FullDefenition::OuterOperationDefenition::OuterAtomicOperation(&sharedAcc,myAcc);
+    __syncthreads();
+    if (threadIdx.x==0) 
+        FullDefenition::OuterOperationDefenition::OuterAtomicOperation(output,sharedAcc);
+}
+
+template<class FullDefenition,class InputType, class OutputType,int InputMultiplier>
+void GeneralScalarDot_submitToGPU(GPUAFW::GPUSubmissionData &data)
+{
+
+    int no_of_planes=data.outputs[0].dim.getTotalNoOfElements();
+    uint no_of_elements=data.inputs[0].dim.getTotalNoOfElements()*InputMultiplier/data.outputs[0].dim.getTotalNoOfElements();
+
+
+    dim3 threadsPerBlock;
+    dim3 blocks;
+    threadsPerBlock.x=1024;
+    threadsPerBlock.y=1;
+    threadsPerBlock.z=1;
+    blocks.x=32;
+    blocks.y=1;
+    blocks.z=1;
+
+    uint elements_per_thread=(no_of_elements/(blocks.x*threadsPerBlock.x))+1;
+    struct InputPointers<InputType,FullDefenition::NoOfInputs> inputs;
+    for (int x=0;x<FullDefenition::NoOfInputs;x++)
+    {
+         inputs.inputPointers[x]=(InputType*)data.inputs[x].pointer;
+    }
+    OutputType *output=(OutputType*)data.outputs[0].pointer;
+    cudaEventRecord(*data.startEvent,data.stream);
+    //Clean output 
+    cudaError_t err;
+    err=cudaMemsetAsync(data.outputs[0].pointer,0,sizeof(OutputType)*no_of_planes,data.stream);
+    if (err!=cudaSuccess)
+          throw GPUAFW::CudaException("Error with zerofying output",err);
+
+    for (int i=0;i<no_of_planes;i++)
+    {
+        //call of kernel
+        reduce_general<FullDefenition,InputType,OutputType> <<<blocks,threadsPerBlock,0,data.stream>>>(inputs,output,no_of_elements,elements_per_thread);
+        //prepare for the next call
+        for (int x=0;x<FullDefenition::NoOfInputs;x++)
+        {
+                inputs.inputPointers[x]+=no_of_elements;
+        }
+        output+=1;
+
+    }
+    FullDefenition::FinalOperationDefenition::submit(data,no_of_elements,no_of_planes);
+}
+
+}};
+
+
+
+#endif	/* GENERALSCALARDOT_TCU */
+

@@ -1,0 +1,7 @@
+cmake_minimum_required (VERSION 2.6)
+project(CppProperties)
+find_package(Boost 1.53 REQUIRED COMPONENTS regex)
+include_directories(${Boost_INCLUDE_DIRS})
+FILE(GLOB MyCSources *.cpp)
+add_library(CppProperties SHARED ${MyCSources} )
+target_link_libraries(CppProperties ${Boost_LIBRARIES})

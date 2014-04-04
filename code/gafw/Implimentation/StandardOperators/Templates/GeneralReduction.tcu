@@ -1,0 +1,346 @@
+/* GeneralReduction.tcu:  Generic implementation of the GeneralReduction template class 
+ * 
+ *      
+ * Copyright (C) 2013  Daniel Muscat
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * 
+ * Author's contact details can be found at http://www.danielmuscat.com 
+ *
+ */
+
+#ifndef __GENERALREDUCTION_TCU__
+#define	__GENERALREDUCTION_TCU__
+
+#include "GeneralReduction.h"
+#include "HelperCudaFunctions.hcu"
+namespace GAFW { namespace GPU  { namespace OperatorTemplates
+{
+    template<class FullDefenition>  
+    GeneralReduction<FullDefenition>::GeneralReduction(GPUFactory * factory,std::string nickname):GAFW::GPU::GPUArrayOperator(factory,nickname,FullDefenition::OperatorName)
+    {
+
+    }
+
+    template<class FullDefenition>  
+    GeneralReduction<FullDefenition>::~GeneralReduction()
+    {
+
+    }
+    template<class FullDefenition>  
+    size_t GeneralReduction<FullDefenition>::getSizeOfElement(GAFW::GeneralImplimentation::StoreType  type)
+    {
+       switch(type)
+       {
+           case GAFW::GeneralImplimentation::complex_double:
+               return sizeof(cuDoubleComplex);
+           case GAFW::GeneralImplimentation::complex_float:
+               return sizeof(cuComplex);
+           case GAFW::GeneralImplimentation::real_double:
+               return sizeof(double);
+           case GAFW::GeneralImplimentation::real_float:
+               return sizeof(float);
+           case GAFW::GeneralImplimentation::real_int:
+               return sizeof(int);
+           case GAFW::GeneralImplimentation::real_uint:
+               return sizeof(unsigned int);
+           case GAFW::GeneralImplimentation::real_longint:
+               return sizeof(long int);
+           case GAFW::GeneralImplimentation::real_ulongint:
+               return sizeof(unsigned long int);
+           case GAFW::GeneralImplimentation::real_shortint:
+               return sizeof(short);
+           case GAFW::GeneralImplimentation::real_ushortint:
+               return sizeof(unsigned short);
+           default:
+               return 0;
+       }
+
+    }
+
+    template<class FullDefenition>  
+    void GeneralReduction<FullDefenition>::validate(GAFW::GPU::ValidationData &data)
+    {
+
+       //No of inputs
+        const int NoOfInputs=FullDefenition::NoOfInputs;
+        if (this->inputs.size()!=NoOfInputs) 
+        {
+            std::stringstream s;
+            s << NoOfInputs << " inputs of same size and type expected";
+            throw ValidationException(s.str());
+        }
+        for ( int i=1;i<NoOfInputs;i++)
+        {   
+            if (this->inputs[0]->getType()!=this->inputs[i]->getType()) throw ValidationException ("Inputs are not of the same type");
+        }
+        std::stringstream ss;
+        ss<< "Input is of type "<< this->inputs[0]->getType();
+        this->logDebug(validation,ss.str());
+        GAFW::GeneralImplimentation::StoreType  inputType=this->inputs[0]->getType();
+        GAFW::GeneralImplimentation::StoreType  outputType=GAFW::GeneralImplimentation::StoreTypeUnknown;
+        if (this->isParameterSet("CastTo"))
+        {
+            this->checkParameter("CastTo",GAFW::Tools::CppProperties::Properties::Int);
+            outputType=(GAFW::GeneralImplimentation::StoreType )this->getIntParameter("CastTo");
+        }
+        bool storetypesok=false;
+        for (int i=0;FullDefenition::options[i].inputType!=GAFW::GeneralImplimentation::StoreTypeUnknown;i++)
+        {
+            if (inputType==FullDefenition::options[i].inputType)
+            {
+                if (outputType==GAFW::GeneralImplimentation::StoreTypeUnknown)
+                {
+                    outputType=FullDefenition::options[i].outputType;
+                }
+                if (outputType==FullDefenition::options[i].outputType)
+                {
+                    //Option found
+                    storetypesok=true;
+                    break;
+                }
+            }
+        }
+        if (!storetypesok)
+        {
+            throw ValidationException("Input/output array store type combination is not supported");
+        }
+
+        GAFW::ArrayDimensions d=this->inputs[0]->getDimensions();
+        if (this->isParameterSet("dimension"))
+        {
+            this->logDebug(validation,"dimension parameter was found set");
+            this->checkParameter("dimension",GAFW::Tools::CppProperties::Properties::Int);
+            this->setParameter("__internal_dimension",this->getIntParameter("dimension"));
+        }
+        else
+        {
+            this->logDebug(validation,"dimension parameter was not found set. It will default to the no of dimensions");
+            this->setParameter("__internal_dimension",d.getNoOfDimensions());
+        }
+
+
+
+        if ((this->outputs.size()!=1)) throw ValidationException("Expected only one output");
+        //Should we init the output
+        this->setParameter("__init_output",!this->outputs[0]->getResults()->isOverwrite());
+
+        int dimension=this->getIntParameter("__internal_dimension");
+        if (dimension>d.getNoOfDimensions())
+            throw ValidationException("Property dimension set up to a higher value then the dimension of the input");
+        int outdims=d.getNoOfDimensions()-dimension;
+        GAFW::ArrayDimensions outdim;
+        if (outdims==0)
+        {
+            outdim.setNoOfDimensions(1);
+            outdim.setDimension(0,1);
+        }
+        else
+        {
+            outdim.setNoOfDimensions(outdims);
+            for (int i=0;i<outdims;i++)
+            {
+                outdim.setDimension(i,d.getDimension(i));
+            }
+        }
+       this->outputs[0]->setDimensions(outdim);
+       this->outputs[0]->setType(outputType);
+       ss.str("");
+       ss<<"Output will be of type " << outputType;
+       this->logDebug(validation,ss.str());
+
+
+       //Buffer we need 32 elements of buffer maximum..(this should be revamped better)
+       data.bufferMode=GAFW::GPU::Buffer::Buffer_Normal;
+       data.bufferSize=32*this->getSizeOfElement(outputType);
+
+    }
+    template<class FullDefenition>  
+    void GeneralReduction<FullDefenition>::submitToGPU(GAFW::GPU::GPUSubmissionData &data)
+    {
+
+        GAFW::GeneralImplimentation::StoreType  inputType=data.inputs[0].type;
+        GAFW::GeneralImplimentation::StoreType  outputType=data.outputs[0].type;
+
+        for (int i=0;FullDefenition::options[i].inputType!=GAFW::GeneralImplimentation::StoreTypeUnknown;i++)
+        {
+            if (inputType==FullDefenition::options[i].inputType)
+            {
+                if (outputType==FullDefenition::options[i].outputType)
+                {
+                    //Option found
+                    FullDefenition::options[i].submitFunc(data);
+                    return;
+
+                }
+            }
+        }
+
+
+    }
+
+
+    template<class FullDefenition,class InputType,class OutputType>
+    __global__ void reduce_general(InputPointers<InputType,FullDefenition::NoOfInputs> input, OutputType * buffer, uint no_of_elements, uint elements_per_thread)
+    {
+        __shared__ OutputType sharedAcc[1024]; //Where result accumulates 
+
+        //No per thread and offset
+        OutputType myAcc;
+        FullDefenition::OuterOperationDefenition::setIdentity(myAcc);
+
+        int myIdx=blockIdx.x*blockDim.x*(elements_per_thread)+threadIdx.x;
+        int lastElementInBlock=(blockIdx.x+1)*blockDim.x*(elements_per_thread)-1;
+        //if (threadIdx.x==0) printf ("%d \n ", lastElementInBlock);
+        InputElements<InputType,FullDefenition::NoOfInputs> loadedElements;
+         if (lastElementInBlock<no_of_elements)
+        {
+            for (int x=0;x<elements_per_thread;x++)
+            {
+    #pragma unroll
+                for (int y=0;y<FullDefenition::NoOfInputs;y++)
+                    loadedElements.inputs[y]=input.inputPointers[y][myIdx];
+                myIdx+=blockDim.x;
+                OutputType tmp;
+                FullDefenition::InnerOperationDefenition::InnerOperation(tmp,loadedElements);
+                FullDefenition::OuterOperationDefenition::OuterOperation(myAcc,tmp);
+
+            }
+           // printf ("block %d , thread %d , sum %d",blockIdx.x,threadIdx.x, mySum)
+        }
+        else
+        {
+            for (int x=0;x<elements_per_thread;x++)
+            {
+
+                if (myIdx<no_of_elements) 
+                {
+                    for (int y=0;y<FullDefenition::NoOfInputs;y++)
+                        loadedElements.inputs[y]=input.inputPointers[y][myIdx];
+                    myIdx+=blockDim.x;
+                    OutputType tmp;
+                    FullDefenition::InnerOperationDefenition::InnerOperation(tmp,loadedElements);
+                    FullDefenition::OuterOperationDefenition::OuterOperation(myAcc,tmp);
+                }
+                else break;
+            }
+
+        }
+
+        sharedAcc[threadIdx.x]=myAcc;
+
+        //Now add over shared memory
+        int id=threadIdx.x;
+        int offset2=1;
+         for (int d = blockDim.x>>1; d > 0; d >>= 1)                    // build sum in place up the tree  
+         {   
+           __syncthreads();  
+           if (id < d)  
+           {  
+                int ai = offset2*(2*id+1)-1;  
+                int bi = offset2*(2*id+2)-1;
+                FullDefenition::OuterOperationDefenition::OuterOperation(sharedAcc[bi],sharedAcc[ai]);  
+           }  
+           offset2 *= 2;
+         }
+        if(id==0)
+            buffer[blockIdx.x]=sharedAcc[blockDim.x-1];
+    }
+    template<class FullDefenition,class OutputType>
+    __global__ void reduce_general_final(OutputType * buffer, OutputType* answer,bool initOutput)
+    {
+        //this will be run in one block with as much as threads as the buffer is big
+        __shared__ OutputType sharedAcc[1024]; //Where result accumulates 
+        sharedAcc[threadIdx.x]=buffer[threadIdx.x];
+        __syncthreads();
+
+        //Add over shared memory
+        int id=threadIdx.x;
+        int offset2=1;
+         for (int d = blockDim.x>>1; d > 0; d >>= 1)                    // build sum in place up the tree  
+         {   
+           __syncthreads();  
+           if (id < d)  
+           {  
+                int ai = offset2*(2*id+1)-1;  
+                int bi = offset2*(2*id+2)-1;
+                FullDefenition::OuterOperationDefenition::OuterOperation(sharedAcc[bi],sharedAcc[ai]);  
+           }  
+           offset2 *= 2;
+         }
+        if(id==0)
+        {
+            if (initOutput) *answer=sharedAcc[blockDim.x-1];
+            else FullDefenition::OuterOperationDefenition::OuterOperation(*answer,sharedAcc[blockDim.x-1]);
+        }
+
+    }
+
+
+
+
+
+    template<class FullDefenition,class InputType, class OutputType,int InputMultiplier>
+    void GeneralReduction_submitToGPU(GAFW::GPU::GPUSubmissionData &data)
+    {
+
+        int no_of_planes=data.outputs[0].dim.getTotalNoOfElements();
+        uint no_of_elements=data.inputs[0].dim.getTotalNoOfElements()*InputMultiplier/data.outputs[0].dim.getTotalNoOfElements();
+
+
+        dim3 threadsPerBlock;
+        dim3 blocks;
+        threadsPerBlock.x=1024;
+        threadsPerBlock.y=1;
+        threadsPerBlock.z=1;
+        blocks.x=32;
+        blocks.y=1;
+        blocks.z=1;
+        dim3 threadsPerBlock_final;
+        threadsPerBlock_final.x=blocks.x;
+        threadsPerBlock_final.y=1;
+        threadsPerBlock_final.z=1;
+        dim3 blocks_final;
+        blocks_final.x=1;
+        blocks_final.y=1;
+        blocks_final.z=1;
+
+
+        uint elements_per_thread=(no_of_elements/(blocks.x*threadsPerBlock.x))+1;
+        struct InputPointers<InputType,FullDefenition::NoOfInputs> inputs;
+        for (int x=0;x<FullDefenition::NoOfInputs;x++)
+        {
+             inputs.inputPointers[x]=(InputType*)data.inputs[x].pointer;
+        }
+        OutputType *output=(OutputType*)data.outputs[0].pointer;
+        cudaEventRecord(*data.startEvent,data.stream);
+        
+        for (int i=0;i<no_of_planes;i++)
+        {
+            //call of kernel
+            reduce_general<FullDefenition,InputType,OutputType> <<<blocks,threadsPerBlock,0,data.stream>>>(inputs,(OutputType*)data.bufferGPUPointer,no_of_elements,elements_per_thread);
+            reduce_general_final<FullDefenition,OutputType><<<blocks_final,threadsPerBlock_final,0,data.stream>>>((OutputType*)data.bufferGPUPointer, output,(data.params.getBoolProperty("__init_output")));
+            //prepare for the next call
+            for (int x=0;x<FullDefenition::NoOfInputs;x++)
+            {
+                    inputs.inputPointers[x]+=no_of_elements;
+            }
+            output+=1;
+
+        }
+        FullDefenition::FinalOperationDefenition::submit(data,no_of_elements,no_of_planes);
+    }
+
+}}};
+
+#endif	/* GENERALREDUCTION_TCU */
+
