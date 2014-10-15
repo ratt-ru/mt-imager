@@ -20,6 +20,7 @@
 #include "cuFFTException.h"
 #include <cufft.h>
 #include <string>
+#include <cstdio>
 //#include <sstream>
 using namespace std;
 using namespace GAFW;

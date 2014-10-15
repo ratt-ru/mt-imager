@@ -21,6 +21,9 @@
 #include "common.hcu"
 #include "mtimager.h"
 #include <cuComplex.h>
+
+using namespace mtimager::PolarizationType;
+
 namespace mtimager { namespace PostIFFTStokeConverter_kernels
 {
     template<class DataType,int pols>
