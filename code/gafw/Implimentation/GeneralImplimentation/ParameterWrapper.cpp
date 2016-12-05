@@ -44,11 +44,13 @@ inline ParameterWrapper<T> & ParameterWrapper<T>::setNameAndValue(std::string na
 {
     this->setName(name);
     this->value=value;
+    return *this;
 }
 template <class T>
 inline ParameterWrapper<T> & ParameterWrapper<T>::setValue(T value)
 {
     this->value=value;
+    return *this;
 }
 template class ParameterWrapper<int>;
 template class ParameterWrapper<float>;
